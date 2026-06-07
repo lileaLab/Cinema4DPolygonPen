@@ -529,7 +529,6 @@ class ProjectionPolygonPenData(plugins.ToolData):
         # 右クリック: 作成中の頂点列を破棄
         if ch == c4d.BFM_INPUT_MOUSERIGHT:
             self.pending = []
-            c4d.DrawViews(c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW | c4d.DRAWFLAGS_NO_THREAD)
             c4d.EventAdd()
             return True
 
@@ -627,7 +626,6 @@ class ProjectionPolygonPenData(plugins.ToolData):
         u"""ESC で作成中の頂点列を破棄。"""
         if msg.GetInt32(c4d.BFM_INPUT_CHANNEL) == c4d.KEY_ESC and self.pending:
             self.pending = []
-            c4d.DrawViews(c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW | c4d.DRAWFLAGS_NO_THREAD)
             c4d.EventAdd()
             return True
         return False
@@ -644,10 +642,8 @@ class ProjectionPolygonPenData(plugins.ToolData):
             bc[c4d.RESULT_CURSOR] = c4d.MOUSE_FORBIDDEN
             bc[c4d.RESULT_BUBBLEHELP] = u"ProjectionPolygonPen: 下地メッシュなし"
 
-        # プレビュー再描画（重い場合はここを間引く/外す）
-        c4d.DrawViews(c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW
-                      | c4d.DRAWFLAGS_NO_THREAD
-                      | c4d.DRAWFLAGS_NO_ANIMATION)
+        # 注: GetCursorInfo 内で DrawViews を呼ぶと描画が再帰的にネストしてクラッシュする。
+        #     ホバープレビューの再描画は C4D の通常リフレッシュに任せ、ここでは呼ばない。
         return True
 
     # --- ビューポート描画 ---------------------------------------------------
