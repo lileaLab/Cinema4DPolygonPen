@@ -281,7 +281,14 @@ def add_ngon(obj, idxs, doc):
         for k in range(tri):
             sel.Select(pc + k)
         bc = c4d.BaseContainer()
-        bc[c4d.MDATA_UNTRIANGULATE_ANGLE_RAD] = c4d.utils.DegToRad(179.999)
+        # N-gon 作成を許可（これが無いと四角止まりで三角が残る）。角度しきい値は最大にして
+        # 非平面でも全ての内部エッジを溶かして 1 枚の N-gon にする。
+        ngons_id = getattr(c4d, "MDATA_UNTRIANGULATE_NGONS", None)
+        angle_id = getattr(c4d, "MDATA_UNTRIANGULATE_ANGLE_RAD", None)
+        if ngons_id is not None:
+            bc[ngons_id] = True
+        if angle_id is not None:
+            bc[angle_id] = c4d.utils.DegToRad(180.0)
         c4d.utils.SendModelingCommand(
             command=c4d.MCOMMAND_UNTRIANGULATE,
             list=[obj],
@@ -518,6 +525,11 @@ class ProjectionPolygonPenData(plugins.ToolData):
             add_ngon(self.draw_op, self.pending, doc)
         doc.EndUndo()
         self.pending = []
+        # リトポ型は「閉じるたびに新規オブジェクト」にする。
+        # 既存の ProjectionPolygonPen に追記せず、次のポリゴンは別の新規メッシュに作る。
+        if self.mode == "retopo":
+            self._retopo_op = None
+            self.draw_op = None
         c4d.EventAdd()
 
     # --- マウス入力 ---------------------------------------------------------
