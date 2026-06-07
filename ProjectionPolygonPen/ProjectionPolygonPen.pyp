@@ -614,9 +614,9 @@ class ProjectionPolygonPenData(plugins.ToolData):
             if hit is not None:
                 self.draw_op.SetPoint(idx, (~self.draw_op.GetMg()) * hit["world_pos"])
                 self.draw_op.Message(c4d.MSG_UPDATE)
-                c4d.DrawViews(c4d.DRAWFLAGS_ONLY_ACTIVE_VIEW
-                              | c4d.DRAWFLAGS_NO_THREAD
-                              | c4d.DRAWFLAGS_NO_ANIMATION)
+                # 同期 DrawViews は巨大シーンでメインスレッド描画が深く再帰し、
+                # スタックオーバーフロー(クラッシュ)を起こす。非同期の EventAdd で再描画を促す。
+                c4d.EventAdd()
 
         end = win.MouseDragEnd()
         if moved:
