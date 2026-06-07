@@ -386,6 +386,7 @@ class ProjectionPolygonPenData(plugins.ToolData):
     pending = None       # 確定待ち頂点 index 列（draw_op 基準）。InitTool で [] に
     hover_hit = None     # カーソル下の投影結果（プレビュー用）
     _base_pc = 0         # draw_op の「ツール開始時の頂点数」（掴み対象の下限）
+    _dragging = False    # 頂点ドラッグ中フラグ（ドラッグ中はホバープレビュー線を隠す）
 
     # --- 基本コールバック ---------------------------------------------------
     def GetState(self, doc):
@@ -437,6 +438,18 @@ class ProjectionPolygonPenData(plugins.ToolData):
             return a.GetGUID() == b.GetGUID()
         except Exception:
             return a is b
+
+    def _sync_pending(self):
+        u"""C4D の Undo 等で頂点が減った場合、pending を実際の頂点数に追従させる。
+
+        頂点追加は常に末尾に行うため、Ctrl+Z で最後の頂点が消えると pending 末尾の
+        インデックスが範囲外になり、自動的に「1 つ戻る」形になる。
+        """
+        if not self._alive(self.draw_op) or self.pending is None:
+            self.pending = []
+            return
+        pc = self.draw_op.GetPointCount()
+        self.pending = [i for i in self.pending if 0 <= i < pc]
 
     def _update_mode(self, doc):
         u"""選択状態からモードと作成先を決定（新規オブジェクトは作らない）。"""
@@ -543,6 +556,7 @@ class ProjectionPolygonPenData(plugins.ToolData):
         self._ensure_target(doc)
         if self.draw_op is None:
             return True
+        self._sync_pending()
 
         # 既存の自作頂点ヒット -> 閉じ / ドラッグ移動 / 共有
         if self._alive(self.draw_op):
@@ -588,6 +602,7 @@ class ProjectionPolygonPenData(plugins.ToolData):
             return False
 
         old_local = self.draw_op.GetPoint(idx)
+        self._dragging = True   # ドラッグ中はホバープレビュー（緑線）を隠す
         win.MouseDragStart(c4d.KEY_MLEFT, float(mx), float(my),
                            c4d.MOUSEDRAGFLAGS_DONTHIDEMOUSE)
         cur_x = float(mx)
@@ -619,12 +634,13 @@ class ProjectionPolygonPenData(plugins.ToolData):
                 c4d.EventAdd()
 
         end = win.MouseDragEnd()
+        self._dragging = False   # ドラッグ終了 -> ホバープレビューを再表示
         if moved:
             if end == c4d.MOUSEDRAGRESULT_ESCAPE:
                 self.draw_op.SetPoint(idx, old_local)
                 self.draw_op.Message(c4d.MSG_UPDATE)
             doc.EndUndo()
-            c4d.EventAdd()
+        c4d.EventAdd()
         return moved
 
     def KeyboardInput(self, doc, data, bd, win, msg):
@@ -647,8 +663,10 @@ class ProjectionPolygonPenData(plugins.ToolData):
             bc[c4d.RESULT_CURSOR] = c4d.MOUSE_FORBIDDEN
             bc[c4d.RESULT_BUBBLEHELP] = u"ProjectionPolygonPen: 下地メッシュなし"
 
-        # 注: GetCursorInfo 内で DrawViews を呼ぶと描画が再帰的にネストしてクラッシュする。
-        #     ホバープレビューの再描画は C4D の通常リフレッシュに任せ、ここでは呼ばない。
+        # 同期 DrawViews は巨大シーンで描画が深く再帰してクラッシュするため使わない。
+        # 代わりに非同期の EventAdd で再描画を促す（イベントキュー経由なので再帰せず安全）。
+        # これでホバープレビュー（次頂点候補への線）が一貫して更新される。
+        c4d.EventAdd()
         return True
 
     # --- ビューポート描画 ---------------------------------------------------
@@ -679,8 +697,8 @@ class ProjectionPolygonPenData(plugins.ToolData):
             bd.SetPen(c4d.Vector(1.0, 0.35, 0.0))
             bd.DrawHandle(pts[0], c4d.DRAWHANDLE_MIDDLE, 0)
 
-        # カーソル下プレビュー点とラバーバンド
-        if self.hover_hit is not None:
+        # カーソル下プレビュー点とラバーバンド（ドラッグ中は隠す）
+        if self.hover_hit is not None and not self._dragging:
             hp = self.hover_hit["world_pos"]
             bd.SetPen(c4d.Vector(0.2, 1.0, 0.4))
             bd.DrawHandle(hp, c4d.DRAWHANDLE_MIDDLE, 0)
