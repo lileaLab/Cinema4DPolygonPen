@@ -545,6 +545,9 @@ class ProjectionPolygonPenData(plugins.ToolData):
 
     # --- マウス入力 ---------------------------------------------------------
     def MouseInput(self, doc, data, bd, win, msg):
+        # Alt 押下中はエディタカメラ操作なので、ツールは介入せず C4D に委ねる
+        if msg.GetInt32(c4d.BFM_INPUT_QUALIFIER) & c4d.QALT:
+            return False
         mx = int(msg[c4d.BFM_INPUT_X])
         my = int(msg[c4d.BFM_INPUT_Y])
         ch = msg[c4d.BFM_INPUT_CHANNEL]
@@ -689,6 +692,14 @@ class ProjectionPolygonPenData(plugins.ToolData):
         self._sync_pending()
 
         mx, my = int(x), int(y)
+        # カーソルが 3D ビューポートの外にある時は投影プレビューを消す。
+        # ビューポート外の座標でレイキャストすると、投影点が画面端（左上）へ飛ぶため。
+        fr = bd.GetFrame()
+        if mx < fr["cl"] or mx > fr["cr"] or my < fr["ct"] or my > fr["cb"]:
+            if self.hover_hit is not None:
+                self.hover_hit = None
+                c4d.EventAdd()
+            return True
         # マウス移動量が小さい間はレイキャストも再描画もスキップ（巨大シーンの負荷・クラッシュ対策）。
         ddx = mx - self._last_cx
         ddy = my - self._last_cy
