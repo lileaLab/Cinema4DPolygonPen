@@ -259,12 +259,13 @@ def add_face(obj, idxs):
 
 
 def add_ngon(obj, idxs, doc):
-    u"""5頂点以上の多角形を作成。
+    u"""5頂点以上の多角形を 1 枚の N-gon として作成。
 
-    Cinema 4D のポリゴンは最大4頂点なので、まず頂点列を三角ファンで分割して
-    複数の三角ポリゴンを作り、その後 UNTRIANGULATE で内部エッジを溶かして
-    1枚の N-gon に統合する（非平面でも統合できるよう角度しきい値は最大に）。
-    UNTRIANGULATE が効かない場合でも三角群として形状は残る。
+    Cinema 4D のポリゴンは最大4頂点で、Python に N-gon 直接生成APIは無い。
+    そこで頂点列を三角ファンで分割して複数の三角ポリゴンを作り、その三角群だけを
+    選択して MCOMMAND_MELT で溶かし、1 枚の N-gon に統合する
+    （従来のポリゴンペンの「N-gon で生成」と同じ結果）。
+    MELT が効かない環境でも三角群として形状は残る。
     """
     n = len(idxs)
     pc = obj.GetPolygonCount()
@@ -274,26 +275,18 @@ def add_ngon(obj, idxs, doc):
         obj.SetPolygon(pc + k, c4d.CPolygon(idxs[0], idxs[k + 1], idxs[k + 2]))
     obj.Message(c4d.MSG_UPDATE)
 
-    # 追加した三角を選択して N-gon 化（内部エッジを溶かす）
+    # 追加した三角群だけを選択して MELT で 1 枚の N-gon に統合する。
+    # （他の既存ポリゴンは選択しないので巻き込み統合は起きない）
     try:
         sel = obj.GetPolygonS()
         sel.DeselectAll()
         for k in range(tri):
             sel.Select(pc + k)
-        bc = c4d.BaseContainer()
-        # N-gon 作成を許可（これが無いと四角止まりで三角が残る）。角度しきい値は最大にして
-        # 非平面でも全ての内部エッジを溶かして 1 枚の N-gon にする。
-        ngons_id = getattr(c4d, "MDATA_UNTRIANGULATE_NGONS", None)
-        angle_id = getattr(c4d, "MDATA_UNTRIANGULATE_ANGLE_RAD", None)
-        if ngons_id is not None:
-            bc[ngons_id] = True
-        if angle_id is not None:
-            bc[angle_id] = c4d.utils.DegToRad(180.0)
         c4d.utils.SendModelingCommand(
-            command=c4d.MCOMMAND_UNTRIANGULATE,
+            command=c4d.MCOMMAND_MELT,
             list=[obj],
             mode=c4d.MODELINGCOMMANDMODE_POLYGONSELECTION,
-            bc=bc,
+            bc=c4d.BaseContainer(),
             doc=doc)
         sel.DeselectAll()
         obj.Message(c4d.MSG_UPDATE)
