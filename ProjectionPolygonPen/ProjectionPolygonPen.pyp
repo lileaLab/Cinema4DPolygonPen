@@ -51,6 +51,8 @@ SCOPE_SELECTION = 1
 RAY_LENGTH = 1.0e9
 # ドラッグ判定のピクセル閾値（これ未満の移動はクリック扱い）
 DRAG_THRESHOLD_PX = 3.0
+# ホバー時のレイキャスト/再描画を間引くマウス移動しきい値(px)。巨大シーンの負荷・クラッシュ対策。
+CURSOR_MOVE_THRESHOLD = 6
 
 
 # ----------------------------------------------------------------------------
@@ -387,6 +389,9 @@ class ProjectionPolygonPenData(plugins.ToolData):
     hover_hit = None     # カーソル下の投影結果（プレビュー用）
     _base_pc = 0         # draw_op の「ツール開始時の頂点数」（掴み対象の下限）
     _dragging = False    # 頂点ドラッグ中フラグ（ドラッグ中はホバープレビュー線を隠す）
+    _in_draw = False     # Draw 再入ガード（描画の再帰によるスタックオーバーフロー防止）
+    _last_cx = -99999    # 直近にレイキャストしたカーソル座標（移動しきい値での間引き用）
+    _last_cy = -99999
 
     # --- 基本コールバック ---------------------------------------------------
     def GetState(self, doc):
@@ -475,7 +480,7 @@ class ProjectionPolygonPenData(plugins.ToolData):
         self._update_mode(doc)
         if self.mode == "retopo" and self.draw_op is None:
             op = c4d.PolygonObject(0, 0)
-            op.SetName("ProjectionPolygonPen")
+            op.SetName("Polygon")
             self._retopo_op = op
             self.draw_op = op
             self.pending = []
@@ -643,18 +648,54 @@ class ProjectionPolygonPenData(plugins.ToolData):
         c4d.EventAdd()
         return moved
 
+    def _undo_last_vertex(self, doc):
+        u"""作成中の最後の頂点を取り消して 1 つ前の頂点指定状態へ戻す。
+
+        5点目を決めようとしている時に呼ぶと、4点目を取り消して「4点目を決めようと
+        している状態（頂点3つ）」に戻る。末尾に新規追加した頂点はメッシュからも削除し、
+        既存の共有頂点（継ぎ足しで再利用したもの）は pending から外すだけにする。
+        """
+        if not self.pending or not self._alive(self.draw_op):
+            return
+        last = self.pending.pop()
+        pc = self.draw_op.GetPointCount()
+        if last == pc - 1 and last >= self._base_pc:
+            doc.StartUndo()
+            doc.AddUndo(c4d.UNDOTYPE_CHANGE, self.draw_op)
+            self.draw_op.ResizeObject(pc - 1, self.draw_op.GetPolygonCount())
+            self.draw_op.Message(c4d.MSG_UPDATE)
+            doc.EndUndo()
+        c4d.EventAdd()
+
     def KeyboardInput(self, doc, data, bd, win, msg):
-        u"""ESC で作成中の頂点列を破棄。"""
-        if msg.GetInt32(c4d.BFM_INPUT_CHANNEL) == c4d.KEY_ESC and self.pending:
+        u"""ESC で頂点列を破棄、Ctrl+Z で作成中の最後の頂点を 1 つ取り消し。"""
+        ch = msg.GetInt32(c4d.BFM_INPUT_CHANNEL)
+        qual = msg.GetInt32(c4d.BFM_INPUT_QUALIFIER)
+        if ch == c4d.KEY_ESC and self.pending:
             self.pending = []
             c4d.EventAdd()
+            return True
+        # Ctrl+Z（Windows: QCTRL）: 作成中の最後の頂点を取り消す
+        if ch in (ord('z'), ord('Z')) and (qual & c4d.QCTRL) and self.pending:
+            self._undo_last_vertex(doc)
             return True
         return False
 
     # --- カーソル情報 / プレビュー ------------------------------------------
     def GetCursorInfo(self, doc, data, bd, x, y, bc):
         self._update_mode(doc)
-        self.hover_hit = self._raycast(doc, bd, int(x), int(y))
+        self._sync_pending()
+
+        mx, my = int(x), int(y)
+        # マウス移動量が小さい間はレイキャストも再描画もスキップ（巨大シーンの負荷・クラッシュ対策）。
+        ddx = mx - self._last_cx
+        ddy = my - self._last_cy
+        if (ddx * ddx + ddy * ddy) < (CURSOR_MOVE_THRESHOLD * CURSOR_MOVE_THRESHOLD):
+            return True
+        self._last_cx = mx
+        self._last_cy = my
+
+        self.hover_hit = self._raycast(doc, bd, mx, my)
 
         if self.hover_hit is not None:
             bc[c4d.RESULT_CURSOR] = c4d.MOUSE_POINT_HAND
@@ -663,9 +704,7 @@ class ProjectionPolygonPenData(plugins.ToolData):
             bc[c4d.RESULT_CURSOR] = c4d.MOUSE_FORBIDDEN
             bc[c4d.RESULT_BUBBLEHELP] = u"ProjectionPolygonPen: 下地メッシュなし"
 
-        # 同期 DrawViews は巨大シーンで描画が深く再帰してクラッシュするため使わない。
-        # 代わりに非同期の EventAdd で再描画を促す（イベントキュー経由なので再帰せず安全）。
-        # これでホバープレビュー（次頂点候補への線）が一貫して更新される。
+        # 非同期 EventAdd で再描画（移動しきい値を超えた時のみなので頻度は低い）。
         c4d.EventAdd()
         return True
 
@@ -673,41 +712,47 @@ class ProjectionPolygonPenData(plugins.ToolData):
     def Draw(self, doc, data, bd, bh, bt, flags):
         if not (flags & c4d.TOOLDRAWFLAGS_HIGHLIGHT):
             return c4d.TOOLDRAW_HANDLES
+        # 描画が再帰的に呼ばれてもスタックを食い潰さないよう再入を弾く。
+        if self._in_draw:
+            return c4d.TOOLDRAW_HANDLES
+        self._in_draw = True
+        try:
+            bd.SetMatrix_Matrix(None, c4d.Matrix())
 
-        bd.SetMatrix_Matrix(None, c4d.Matrix())
+            # 確定待ち頂点列
+            pts = []
+            if self._alive(self.draw_op):
+                mg = self.draw_op.GetMg()
+                pc = self.draw_op.GetPointCount()
+                for i in self.pending:
+                    if 0 <= i < pc:
+                        pts.append(mg * self.draw_op.GetPoint(i))
 
-        # 確定待ち頂点列
-        pts = []
-        if self._alive(self.draw_op):
-            mg = self.draw_op.GetMg()
-            pc = self.draw_op.GetPointCount()
-            for i in self.pending:
-                if 0 <= i < pc:
-                    pts.append(mg * self.draw_op.GetPoint(i))
+            # 頂点列の線とハンドル
+            bd.SetPen(c4d.Vector(1.0, 0.8, 0.0))
+            for j in range(len(pts) - 1):
+                bd.DrawLine(pts[j], pts[j + 1], 0)
+            for p in pts:
+                bd.DrawHandle(p, c4d.DRAWHANDLE_SMALL, 0)
 
-        # 頂点列の線とハンドル
-        bd.SetPen(c4d.Vector(1.0, 0.8, 0.0))
-        for j in range(len(pts) - 1):
-            bd.DrawLine(pts[j], pts[j + 1], 0)
-        for p in pts:
-            bd.DrawHandle(p, c4d.DRAWHANDLE_SMALL, 0)
+            # 最初の頂点（閉じ先）を強調
+            if len(pts) >= 1:
+                bd.SetPen(c4d.Vector(1.0, 0.35, 0.0))
+                bd.DrawHandle(pts[0], c4d.DRAWHANDLE_MIDDLE, 0)
 
-        # 最初の頂点（閉じ先）を強調
-        if len(pts) >= 1:
-            bd.SetPen(c4d.Vector(1.0, 0.35, 0.0))
-            bd.DrawHandle(pts[0], c4d.DRAWHANDLE_MIDDLE, 0)
-
-        # カーソル下プレビュー点とラバーバンド（ドラッグ中は隠す）
-        if self.hover_hit is not None and not self._dragging:
-            hp = self.hover_hit["world_pos"]
-            bd.SetPen(c4d.Vector(0.2, 1.0, 0.4))
-            bd.DrawHandle(hp, c4d.DRAWHANDLE_MIDDLE, 0)
-            if pts:
-                bd.DrawLine(pts[-1], hp, 0)
-                # 3頂点以上たまっていれば、閉じ線（最初の頂点へ）もプレビュー
-                if len(pts) >= 2:
-                    bd.SetPen(c4d.Vector(0.5, 0.5, 0.5))
-                    bd.DrawLine(hp, pts[0], 0)
+            # カーソル下プレビュー点とラバーバンド（ドラッグ中は隠す）
+            if self.hover_hit is not None and not self._dragging:
+                hp = self.hover_hit["world_pos"]
+                bd.SetPen(c4d.Vector(0.2, 1.0, 0.4))
+                bd.DrawHandle(hp, c4d.DRAWHANDLE_MIDDLE, 0)
+                if pts:
+                    bd.DrawLine(pts[-1], hp, 0)
+                    # 3頂点以上たまっていれば、閉じ線（最初の頂点へ）もプレビュー
+                    if len(pts) >= 2:
+                        bd.SetPen(c4d.Vector(0.5, 0.5, 0.5))
+                        bd.DrawLine(hp, pts[0], 0)
+        finally:
+            self._in_draw = False
 
         return c4d.TOOLDRAW_HANDLES | c4d.TOOLDRAW_AXIS
 
