@@ -1,0 +1,5 @@
+﻿// C4D-StringResource
+STRINGTABLE
+{
+  IDS_PROJECTIONPOLYGONPEN "投影ポリゴンペン";
+}

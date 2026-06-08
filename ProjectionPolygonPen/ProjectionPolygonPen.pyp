@@ -38,6 +38,9 @@ from c4d import plugins, utils, gui
 # ----------------------------------------------------------------------------
 PLUGIN_ID = 1059357  # 暫定。配布時は plugincafe で取得した一意IDへ差し替え
 
+# res/c4d_symbols.h の IDS_PROJECTIONPOLYGONPEN と一致させる（ツール名のローカライズ用）
+IDS_PROJECTIONPOLYGONPEN = 10000
+
 # UI パラメータID
 ID_MODE_LABEL   = 1000
 ID_PROJ_SCOPE   = 1002
@@ -773,9 +776,29 @@ class ProjectionPolygonPenData(plugins.ToolData):
 # ----------------------------------------------------------------------------
 # 登録
 # ----------------------------------------------------------------------------
+def _resolve_tool_name():
+    u"""UI 言語に応じたツール名を返す（日本語UIなら「投影ポリゴンペン」）。"""
+    try:
+        idx = 0
+        while True:
+            info = c4d.GeGetLanguage(idx)
+            if not info:
+                break
+            if info.get("default_language"):
+                ext = (info.get("extensions") or "").lower()
+                return u"投影ポリゴンペン" if ext.startswith("ja") else "ProjectionPolygonPen"
+            idx += 1
+    except Exception:
+        pass
+    return "ProjectionPolygonPen"
+
+
 def main():
+    # ツール名は UI 言語で切り替える。.str リソースは環境依存で文字化け/未解決になるため
+    # 使わず、Python 文字列（UTF-8）で直接指定する。
+    name = _resolve_tool_name()
     # 注: c4d の登録関数は位置引数で呼ぶ（キーワード引数だと TypeError になる版がある）
-    plugins.RegisterToolPlugin(PLUGIN_ID, "ProjectionPolygonPen", 0, None,
+    plugins.RegisterToolPlugin(PLUGIN_ID, name, 0, None,
                                u"投影モードが正しく動作する投影ポリゴンペン（GeRayCollider投影）",
                                ProjectionPolygonPenData())
 

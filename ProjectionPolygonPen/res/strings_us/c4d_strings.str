@@ -1,4 +1,5 @@
-// C4D-StringResource
+﻿// C4D-StringResource
 STRINGTABLE
 {
+  IDS_PROJECTIONPOLYGONPEN "ProjectionPolygonPen";
 }

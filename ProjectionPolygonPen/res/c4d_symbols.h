@@ -3,7 +3,8 @@
 
 enum
 {
-  _DUMMY_ELEMENT_ = 10000
+  IDS_PROJECTIONPOLYGONPEN = 10000,
+  _DUMMY_ELEMENT_
 };
 
 #endif
